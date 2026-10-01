@@ -42,14 +42,16 @@ providers:
     base_url: https://bedrock-mantle.us-east-1.api.aws/anthropic
     credential: bedrock_sigv4
 
-  # Mantle's OpenAI-compatible endpoint is the only place Bedrock Web Search
-  # runs. It serves the OpenAI GPT models over the Responses API.
-  - name: bedrock-mantle-openai
-    display_name: AWS Bedrock Mantle (OpenAI GPT)
-    type: openai
-    region: us-east-1
-    base_url: https://bedrock-mantle.us-east-1.api.aws/openai/v1/
-    credential: bedrock_bearer
+  # OpenAI GPT is pulled for now (2026-10-01): the first demo's model check
+  # failed on it. To restore it, uncomment this provider and the three GPT
+  # models below. Mantle's OpenAI-compatible endpoint is the only place
+  # Bedrock Web Search runs; it serves the GPT models over the Responses API.
+  # - name: bedrock-mantle-openai
+  #   display_name: AWS Bedrock Mantle (OpenAI GPT)
+  #   type: openai
+  #   region: us-east-1
+  #   base_url: https://bedrock-mantle.us-east-1.api.aws/openai/v1/
+  #   credential: bedrock_bearer
 
   # bedrock-runtime's OpenAI-compatible endpoint forwards the requested model
   # and serves the other open and partner models. The trailing slash on the
@@ -99,28 +101,29 @@ models:
     provider: bedrock-claude
     display_name: Claude Haiku 4.5 (Claude Code small model)
 
-  - id: openai.gpt-5.6-terra
-    provider: bedrock-mantle-openai
-    display_name: GPT-5.6 Terra (web search)
-    required: true
-    agents: {context_limit: 1050000, reasoning_effort: {default: high, max: xhigh}, web_search: true}
-    # Model card (no US commercial Price List row).
-    price: {input: 2.20, output: 13.20, cache_read: 0.22, cache_write: 2.75}
+  # Pulled for now with bedrock-mantle-openai above.
+  # - id: openai.gpt-5.6-terra
+  #   provider: bedrock-mantle-openai
+  #   display_name: GPT-5.6 Terra (web search)
+  #   required: true
+  #   agents: {context_limit: 1050000, reasoning_effort: {default: high, max: xhigh}, web_search: true}
+  # Model card (no US commercial Price List row).
+  #   price: {input: 2.20, output: 13.20, cache_read: 0.22, cache_write: 2.75}
 
-  - id: openai.gpt-5.5
-    provider: bedrock-mantle-openai
-    display_name: GPT-5.5 (web search)
-    agents: {context_limit: 1050000, reasoning_effort: {default: high, max: xhigh}, web_search: true}
-    # Model card (no Price List row).
-    price: {input: 5.50, output: 33.00, cache_read: 0.55}
+  # - id: openai.gpt-5.5
+  #   provider: bedrock-mantle-openai
+  #   display_name: GPT-5.5 (web search)
+  #   agents: {context_limit: 1050000, reasoning_effort: {default: high, max: xhigh}, web_search: true}
+  # Model card (no Price List row).
+  #   price: {input: 5.50, output: 33.00, cache_read: 0.55}
 
   # Bedrock Web Search does not support GPT-6.x.
-  - id: openai.gpt-6.1-sol
-    provider: bedrock-mantle-openai
-    display_name: GPT-6.1 Sol
-    agents: {context_limit: 1000000, responses_api: true}
-    # Model card (no US commercial Price List row).
-    price: {input: 2.20, output: 11.00, cache_read: 0.11, cache_write: 2.75}
+  # - id: openai.gpt-6.1-sol
+  #   provider: bedrock-mantle-openai
+  #   display_name: GPT-6.1 Sol
+  #   agents: {context_limit: 1000000, responses_api: true}
+  # Model card (no US commercial Price List row).
+  #   price: {input: 2.20, output: 11.00, cache_read: 0.11, cache_write: 2.75}
 
   - id: us.xai.grok-4.7
     provider: bedrock-openai
@@ -173,6 +176,7 @@ models:
 
 # Requested scope this file does not configure, reported with every seed.
 known_gaps:
+  - OpenAI GPT models and Bedrock Web Search are not configured for now. Bedrock serves web search only for GPT-5.x on Mantle.
   - Claude Fable 5.1 is not configured. Bedrock serves it only with a data retention mode of aws_review or provider_data_share, which is not approved.
   - Claude Sonnet 5.5 is not on Bedrock Mantle yet, so it has its own InvokeModel provider.
   - The USD 50 per user per week AI budget is not configured. Coder v2.37.1 accepts only a monthly budget period.
