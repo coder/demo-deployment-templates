@@ -16,8 +16,14 @@ jobs:
       - uses: hashicorp/setup-terraform@v3
         with:
           terraform_wrapper: false
+      - name: No credentials in this public repository
+        run: ./scripts/check-no-secrets.py
       - name: Lint user data
         run: ./scripts/check-user-data.py
+      - name: Check seed files
+        run: |
+          pip install --quiet pyyaml
+          ./scripts/check-seed.py
       - name: terraform fmt
         run: terraform fmt -check -recursive
       - name: terraform validate

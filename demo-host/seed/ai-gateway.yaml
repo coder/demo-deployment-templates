@@ -1,0 +1,178 @@
+# AI Gateway and Coder Agents seed for every demo built from this commit.
+#
+# DemoBuilder reads this file at the commit a demo's template version was
+# published from, so a demo's infrastructure and its AI configuration always
+# match. It creates or corrects each provider, restates each price, checks that
+# each model answers through the demo's gateway as the dev persona, and offers
+# the answering `agents` models in Coder Agents.
+#
+# THIS REPOSITORY IS PUBLIC. Never put a key, token, password, account ID or
+# secret ARN here. A provider names a credential slot; DemoBuilder fills it
+# from its own secret store at seed time:
+#   bedrock_sigv4   Bedrock access key pair, for type bedrock
+#   bedrock_bearer  Bedrock API key, for type openai
+#
+# Bedrock only. Facts below were checked on 2026-10-01: context windows and
+# effort values from each Bedrock model card, prices (USD per 1M tokens) from
+# the AWS Price List unless marked "model card", and every agents model made a
+# structured tool call on the endpoint listed.
+version: 1
+
+providers:
+  # InvokeModel routes one primary model per provider: requests naming a
+  # model that contains "haiku" go to small_fast_model, all others to model.
+  # Workspace templates point Claude Code here.
+  - name: bedrock-claude
+    display_name: AWS Bedrock (Claude Sonnet 5.5)
+    type: bedrock
+    protocol: invoke-model
+    region: us-west-2
+    base_url: https://bedrock-runtime.us-west-2.amazonaws.com
+    model: us.anthropic.claude-sonnet-5-5
+    small_fast_model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    credential: bedrock_sigv4
+
+  # Mantle forwards the requested Claude model, so one provider serves them
+  # all. us-east-1 is the Mantle region that serves Sonnet 5 and Opus 5.5.
+  - name: bedrock-mantle-claude
+    display_name: AWS Bedrock Mantle (Claude)
+    type: bedrock
+    protocol: mantle
+    region: us-east-1
+    base_url: https://bedrock-mantle.us-east-1.api.aws/anthropic
+    credential: bedrock_sigv4
+
+  # Mantle's OpenAI-compatible endpoint is the only place Bedrock Web Search
+  # runs. It serves the OpenAI GPT models over the Responses API.
+  - name: bedrock-mantle-openai
+    display_name: AWS Bedrock Mantle (OpenAI GPT)
+    type: openai
+    region: us-east-1
+    base_url: https://bedrock-mantle.us-east-1.api.aws/openai/v1/
+    credential: bedrock_bearer
+
+  # bedrock-runtime's OpenAI-compatible endpoint forwards the requested model
+  # and serves the other open and partner models. The trailing slash on the
+  # base URL is load-bearing.
+  - name: bedrock-openai
+    display_name: AWS Bedrock (OpenAI-compatible)
+    type: openai
+    region: us-west-2
+    base_url: https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/
+    credential: bedrock_bearer
+
+# Each model: id is the exact string clients send. required models must answer
+# or the seed fails. agents offers the model in Coder Agents; exactly one is
+# the default. context_limit is Coder Agents' compaction window in tokens.
+# reasoning_effort is the Agents default and the most a user may pick.
+# web_search turns on Bedrock Web Search; responses_api forces the OpenAI
+# Responses API for a model id Coder would not detect.
+models:
+  - id: us.anthropic.claude-sonnet-5-5
+    provider: bedrock-claude
+    display_name: Claude Sonnet 5.5
+    required: true
+    agents: {default: true, context_limit: 1000000, reasoning_effort: {default: high, max: max}}
+    price: {input: 2.20, output: 11.00, cache_read: 0.22, cache_write: 2.75}
+
+  - id: anthropic.claude-opus-5-5
+    provider: bedrock-mantle-claude
+    display_name: Claude Opus 5.5
+    agents: {context_limit: 1000000, reasoning_effort: {default: high, max: max}}
+    price: {input: 4.40, output: 22.00, cache_read: 0.22, cache_write: 5.50}
+
+  - id: anthropic.claude-sonnet-5
+    provider: bedrock-mantle-claude
+    display_name: Claude Sonnet 5
+    agents: {context_limit: 1000000, reasoning_effort: {default: high, max: max}}
+    price: {input: 2.20, output: 11.00, cache_read: 0.22, cache_write: 2.75}
+
+  # Haiku 4.5's model card says end of life no sooner than 2026-10-01.
+  - id: anthropic.claude-haiku-4-5
+    provider: bedrock-mantle-claude
+    display_name: Claude Haiku 4.5
+    agents: {context_limit: 200000}
+    price: {input: 1.10, output: 5.50, cache_read: 0.11, cache_write: 1.375}
+
+  # Answers bedrock-claude's small fast model route for Claude Code.
+  - id: us.anthropic.claude-haiku-4-5-20251001-v1:0
+    provider: bedrock-claude
+    display_name: Claude Haiku 4.5 (Claude Code small model)
+
+  - id: openai.gpt-5.6-terra
+    provider: bedrock-mantle-openai
+    display_name: GPT-5.6 Terra (web search)
+    required: true
+    agents: {context_limit: 1050000, reasoning_effort: {default: high, max: xhigh}, web_search: true}
+    # Model card (no US commercial Price List row).
+    price: {input: 2.20, output: 13.20, cache_read: 0.22, cache_write: 2.75}
+
+  - id: openai.gpt-5.5
+    provider: bedrock-mantle-openai
+    display_name: GPT-5.5 (web search)
+    agents: {context_limit: 1050000, reasoning_effort: {default: high, max: xhigh}, web_search: true}
+    # Model card (no Price List row).
+    price: {input: 5.50, output: 33.00, cache_read: 0.55}
+
+  # Bedrock Web Search does not support GPT-6.x.
+  - id: openai.gpt-6.1-sol
+    provider: bedrock-mantle-openai
+    display_name: GPT-6.1 Sol
+    agents: {context_limit: 1000000, responses_api: true}
+    # Model card (no US commercial Price List row).
+    price: {input: 2.20, output: 11.00, cache_read: 0.11, cache_write: 2.75}
+
+  - id: us.xai.grok-4.7
+    provider: bedrock-openai
+    display_name: Grok 4.7
+    agents: {context_limit: 500000}
+    price: {input: 2.20, output: 6.60, cache_read: 0.55}
+
+  # The byoa workspace template's OpenCode default.
+  - id: us.xai.grok-4.6
+    provider: bedrock-openai
+    display_name: Grok 4.6
+    required: true
+    price: {input: 2.20, output: 6.60, cache_read: 0.55}
+
+  - id: zai.glm-5
+    provider: bedrock-openai
+    display_name: GLM-5
+    agents: {context_limit: 200000}
+    price: {input: 1.00, output: 3.20}
+
+  - id: qwen.qwen3-coder-480b-a35b-v1:0
+    provider: bedrock-openai
+    display_name: Qwen3 Coder 480B
+    agents: {context_limit: 128000}
+    price: {input: 0.45, output: 1.80}
+
+  - id: deepseek.v3.2
+    provider: bedrock-openai
+    display_name: DeepSeek V3.2
+    agents: {context_limit: 160000}
+    price: {input: 0.62, output: 1.85}
+
+  - id: nvidia.nemotron-super-3-120b
+    provider: bedrock-openai
+    display_name: NVIDIA Nemotron 3 Super 120B
+    agents: {context_limit: 256000}
+    price: {input: 0.15, output: 0.65}
+
+  # Gateway only: Kimi K3 writes tool calls as text instead of structured
+  # calls, and Gemma makes none, so neither can drive Coder Agents.
+  - id: us.moonshotai.kimi-k3
+    provider: bedrock-openai
+    display_name: Kimi K3
+    price: {input: 3.30, output: 16.50, cache_read: 0.33, cache_write: 4.125}
+
+  - id: google.gemma-3-27b-it
+    provider: bedrock-openai
+    display_name: Gemma 3 27B
+    price: {input: 0.12, output: 0.20}
+
+# Requested scope this file does not configure, reported with every seed.
+known_gaps:
+  - Claude Fable 5.1 is not configured. Bedrock serves it only with a data retention mode of aws_review or provider_data_share, which is not approved.
+  - Claude Sonnet 5.5 is not on Bedrock Mantle yet, so it has its own InvokeModel provider.
+  - The USD 50 per user per week AI budget is not configured. Coder v2.37.1 accepts only a monthly budget period.

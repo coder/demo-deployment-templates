@@ -6,6 +6,8 @@ Coder deployment templates that [DemoBuilder](https://github.com/coder/demobuild
 |---|---|
 | [`demo-host`](demo-host/) | one EC2 demo host running Coder and Gitea, with its target groups and listener rules on the shared load balancer |
 
+Each template's `seed/` directory is what DemoBuilder configures inside a demo built from it, read at the same commit. [`demo-host/seed/ai-gateway.yaml`](demo-host/seed/ai-gateway.yaml) sets the AI Gateway providers and the Coder Agents models.
+
 ## Changing a template
 
 1. Open a pull request. CI renders and lints user data and runs `terraform validate`.
@@ -16,6 +18,6 @@ There is no in-app editor; this repository is the source of truth.
 
 ## Rules
 
-- This repository is public. Never commit credentials. Passwords and tokens are template parameters or AWS Secrets Manager values.
+- This repository is public. Never commit credentials. Passwords and tokens are template parameters or DemoBuilder secrets; seed files name a credential slot instead. CI rejects anything that looks like a credential.
 - Never add a Terraform backend. The manager stores each demo's state in its deployment record.
 - User data must stay under EC2's 16 KB limit. `scripts/check-user-data.py` enforces it.
