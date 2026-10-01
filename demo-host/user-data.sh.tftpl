@@ -1,0 +1,234 @@
+#!/bin/bash
+# Demo host bootstrap. Runs once at first boot.
+# Changing this file replaces the instance (user_data_replace_on_change).
+set -xeuo pipefail
+exec > >(tee /var/log/demobuilder-bootstrap.log) 2>&1
+
+dnf -y update
+dnf -y install docker
+systemctl enable --now docker
+
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64 \
+  -o /usr/local/lib/docker/cli-plugins/docker-compose
+chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+
+# GovCloud spike finding 10: the Coder container runs as uid 1000, which is not
+# in the host docker group, so mounting the socket is not enough. The gid varies
+# by AMI, so it is read here rather than hardcoded.
+DOCKER_GID=$(getent group docker | cut -d: -f3)
+
+# Secrets are handled with xtrace off: a traced assignment or command line
+# copies its value into the bootstrap log.
+set +x
+PGPW=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
+mkdir -p /opt/coder
+printf '%s' "$PGPW" > /opt/coder/.pgpw
+chmod 600 /opt/coder/.pgpw
+
+# The Gitea bootstrap administrator. DemoBuilder passes its password through
+# the gitea_admin_password parameter (base64 here, so no character in it can
+# break this script) and logs in with it to seed Gitea. A deployment created by
+# hand leaves it empty and gets a random password instead, so the host still
+# boots; reset it with `gitea admin user change-password` over SSM if needed.
+GITEA_ADMIN_PW=$(printf '%s' '${gitea_admin_password_b64}' | base64 -d)
+if [ -z "$GITEA_ADMIN_PW" ]; then
+  GITEA_ADMIN_PW=$(head -c 24 /dev/urandom | base64 | tr -d '/+=' | head -c 24)
+fi
+set -x
+
+cat > /opt/coder/docker-compose.yml <<COMPOSE
+services:
+  database:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: coder
+      POSTGRES_PASSWORD: "$${PGPW}"
+      POSTGRES_DB: coder
+    volumes:
+      - coder_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U coder -d coder"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+
+  # The sandbox-local Git service. The rootless image runs Gitea alone; the
+  # standard image always starts OpenSSH under s6, whatever DISABLE_SSH says.
+  gitea:
+    image: gitea/gitea:1.27.3-rootless
+    restart: always
+    environment:
+      GITEA__server__DOMAIN: "${gitea_host}"
+      GITEA__server__ROOT_URL: "${gitea_url}/"
+      GITEA__server__HTTP_PORT: "3000"
+      # The ALB terminates TLS. auto builds links from the Host and
+      # X-Forwarded-Proto headers, so browsers get https while the Coder
+      # container can still call http://gitea:3000 directly. The VPC CIDR is
+      # trusted for X-Forwarded-For, as for Coder below.
+      GITEA__server__PUBLIC_URL_DETECTION: "auto"
+      GITEA__security__REVERSE_PROXY_TRUSTED_PROXIES: "${vpc_cidr}"
+      GITEA__server__DISABLE_SSH: "true"
+      GITEA__server__START_SSH_SERVER: "false"
+      GITEA__server__OFFLINE_MODE: "true"
+      GITEA__database__DB_TYPE: "sqlite3"
+      GITEA__security__INSTALL_LOCK: "true"
+      GITEA__service__DISABLE_REGISTRATION: "true"
+      GITEA__actions__ENABLED: "false"
+      # Repository and issue import from GitHub, including its API and asset hosts.
+      GITEA__migrations__ALLOWED_DOMAINS: "github.com,*.github.com,*.githubusercontent.com"
+      GITEA__cron_0x2E_update_checker__ENABLED: "false"
+    volumes:
+      - gitea_data:/var/lib/gitea
+      - gitea_config:/etc/gitea
+    ports:
+      - "3000:3000"
+
+  coder:
+    image: ghcr.io/coder/coder:${coder_version}
+    restart: always
+    depends_on:
+      database:
+        condition: service_healthy
+    group_add:
+      - "$${DOCKER_GID}"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    # External auth to the sandbox Gitea (CODER_EXTERNAL_AUTH_0_*). A 0600
+    # file rather than this one, because it carries the OAuth client secret.
+    env_file:
+      - /opt/coder/coder.env
+    environment:
+      CODER_PG_CONNECTION_URL: "postgres://coder:$${PGPW}@database:5432/coder?sslmode=disable"
+      CODER_HTTP_ADDRESS: "0.0.0.0:7080"
+
+      # Both hostnames stay one label deep so the single pre-provisioned
+      # wildcard certificate covers them.
+      CODER_ACCESS_URL: "${access_url}"
+      CODER_WILDCARD_ACCESS_URL: "${apps_host}"
+
+      # A demo is on the public internet, so its signup surface matters.
+      # Coder ships a DEFAULT GitHub OAuth provider that is enabled unless
+      # told otherwise, and when no organisation allow-list is configured it
+      # sets allowEveryone, so anyone on the internet with a GitHub account
+      # could create an account on a demo. The demo's accounts are seeded by
+      # scripts/seed_demo.py and there is no reason for self-service signup
+      # of any kind here.
+      CODER_OAUTH2_GITHUB_DEFAULT_PROVIDER_ENABLE: "false"
+
+      # Subdomain app routing is on and path apps are off. Path apps would let
+      # an app be reached at a hostname the wildcard certificate does not cover,
+      # and would prevent testing dynamic subdomain app routing.
+      CODER_DISABLE_PATH_APPS: "true"
+
+      # The ALB terminates TLS and speaks HTTP to this host, so Coder has to
+      # trust the forwarded proto or it will redirect browsers into a loop.
+      # TRUSTED_ORIGINS is a CIDR list of proxies to trust, not a URL. The ALB
+      # sits in the sandbox VPC, so the VPC CIDR is the correct value; passing
+      # a URL here makes coder server exit at startup with an opaque
+      # "invalid CIDR address" error while the ALB reports only a 502.
+      CODER_PROXY_TRUSTED_HEADERS: "X-Forwarded-For,X-Forwarded-Proto,X-Forwarded-Host"
+      CODER_PROXY_TRUSTED_ORIGINS: "${vpc_cidr}"
+
+      # Force DERP over WebSockets so agent relay traffic survives an HTTP load
+      # balancer that does not pass arbitrary upgrades.
+      CODER_DERP_FORCE_WEBSOCKETS: "true"
+
+      # AI budgets. Both have working defaults (highest / month) so these are
+      # here to state the policy rather than to change it: spend is attributed
+      # to a user's highest-limit group, and counters reset on the UTC calendar
+      # month. seed_demo.py then sets a per-user override, which beats any
+      # group budget and is what makes the USD 100 cap per person rather than
+      # a shared pot. Amounts are written without a currency sign on purpose:
+      # this heredoc is unquoted, so a dollar sign followed by a digit expands
+      # as a positional parameter, and under set -u that aborts the bootstrap
+      # with nothing but "unbound variable" to go on.
+      CODER_AI_BUDGET_POLICY: "highest"
+      CODER_AI_BUDGET_PERIOD: "month"
+
+      CODER_TELEMETRY_ENABLE: "true"
+    ports:
+      - "7080:7080"
+
+volumes:
+  coder_pg: {}
+  gitea_data: {}
+  gitea_config: {}
+COMPOSE
+chmod 600 /opt/coder/docker-compose.yml
+
+# Coder's Gitea provider. The browser is sent to the public Gitea host; the
+# token exchange and validation run server side over the compose network. The
+# regex makes Coder's git credential helper answer for clones of the Gitea host
+# inside workspaces. Coder's default Gitea scopes carry a stray space and omit
+# issues, so they are set here. Compose loads every service's env_file even
+# when starting only some services, so this file exists before the first up;
+# the client credentials are appended once Gitea has issued them.
+install -m 600 /dev/null /opt/coder/coder.env
+cat >> /opt/coder/coder.env <<'ENV'
+CODER_EXTERNAL_AUTH_0_ID=gitea
+CODER_EXTERNAL_AUTH_0_TYPE=gitea
+CODER_EXTERNAL_AUTH_0_DISPLAY_NAME=Gitea
+CODER_EXTERNAL_AUTH_0_AUTH_URL=${gitea_url}/login/oauth/authorize
+CODER_EXTERNAL_AUTH_0_TOKEN_URL=http://gitea:3000/login/oauth/access_token
+CODER_EXTERNAL_AUTH_0_VALIDATE_URL=http://gitea:3000/login/oauth/userinfo
+CODER_EXTERNAL_AUTH_0_API_BASE_URL=http://gitea:3000/api/v1
+CODER_EXTERNAL_AUTH_0_REGEX='${gitea_regex}'
+CODER_EXTERNAL_AUTH_0_SCOPES='read:user read:organization write:repository write:issue'
+ENV
+
+# Gitea first: Coder starts only once its external auth credentials exist.
+docker compose -f /opt/coder/docker-compose.yml up -d database gitea
+
+GITEA_UP=no
+for i in $(seq 1 60); do
+  if curl -fsS -m 5 http://localhost:3000/api/healthz >/dev/null 2>&1; then
+    GITEA_UP=yes
+    break
+  fi
+  sleep 5
+done
+if [ "$GITEA_UP" != yes ]; then
+  echo "BOOTSTRAP_TIMEOUT: gitea did not answer /api/healthz within 5 minutes"
+  exit 1
+fi
+
+# The Gitea CLI refuses to run as root, so it runs as the image's git user.
+# The password reaches it on stdin and the API over a curl config on stdin, so
+# it is never on a host command line.
+set +x
+printf '%s\n' "$GITEA_ADMIN_PW" | docker compose -f /opt/coder/docker-compose.yml exec -T -u git gitea \
+  sh -c 'IFS= read -r PW; exec gitea admin user create --username gitea-admin --email gitea-admin@cdrsandboxes.com --password "$PW" --admin --must-change-password=false'
+
+GITEA_AUTH="header = \"Authorization: Basic $(printf '%s' "gitea-admin:$GITEA_ADMIN_PW" | base64 -w0)\""
+curl -fsS -m 30 -K - -o /dev/null http://localhost:3000/api/v1/user <<< "$GITEA_AUTH"
+OAUTH_APP=$(curl -fsS -m 30 -K - -X POST -H 'Content-Type: application/json' \
+  --data '{"name":"coder","confidential_client":true,"redirect_uris":["${access_url}/external-auth/gitea/callback"]}' \
+  http://localhost:3000/api/v1/user/applications/oauth2 <<< "$GITEA_AUTH")
+read -r OAUTH_ID OAUTH_SECRET < <(printf '%s' "$OAUTH_APP" |
+  python3 -c 'import json,sys; a=json.load(sys.stdin); print(a["client_id"], a["client_secret"])')
+if [ -z "$OAUTH_ID" ] || [ -z "$OAUTH_SECRET" ]; then
+  echo "BOOTSTRAP_FAILED: gitea returned no OAuth2 client credentials"
+  exit 1
+fi
+printf '%s\n' "CODER_EXTERNAL_AUTH_0_CLIENT_ID='$OAUTH_ID'" \
+  "CODER_EXTERNAL_AUTH_0_CLIENT_SECRET='$OAUTH_SECRET'" >> /opt/coder/coder.env
+unset GITEA_ADMIN_PW GITEA_AUTH OAUTH_APP OAUTH_SECRET
+set -x
+echo "GITEA_READY"
+
+docker compose -f /opt/coder/docker-compose.yml up -d coder
+
+# Wait for Coder to answer before declaring the host bootstrapped. The ALB
+# health check polls /healthz independently; this only makes the log honest.
+for i in $(seq 1 60); do
+  if curl -fsS -m 5 http://localhost:7080/healthz >/dev/null 2>&1; then
+    echo "BOOTSTRAP_COMPLETE"
+    exit 0
+  fi
+  sleep 5
+done
+
+echo "BOOTSTRAP_TIMEOUT: coder did not answer /healthz within 5 minutes"
+exit 1
