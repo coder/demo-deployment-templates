@@ -79,7 +79,7 @@ data "coder_parameter" "coder_version" {
   display_name = "Child Coder version"
   description  = "Tag of the ghcr.io/coder/coder image the demo host runs. Pinned per WS-9.1."
   type         = "string"
-  default      = "v2.37.6"
+  default      = "v2.38.6"
   mutable      = true
   order        = 2
 }
